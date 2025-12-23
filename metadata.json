@@ -1,0 +1,7 @@
+{
+  "name": "Office Voice Receptionist",
+  "description": "An AI voice agent powered by Gemini Live API, capable of answering calls based on your custom office knowledge base.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
