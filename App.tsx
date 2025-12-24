@@ -7,12 +7,7 @@ import AgentInterface from './components/AgentInterface';
 import { KnowledgeBase, CustomerProfile, InteractionRecord } from './types';
 import { db } from './utils/db';
 
-const App: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<'config' | 'crm' | 'logs' | 'connect'>('config');
-  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
-  
-  // Knowledge Base State
-  const [knowledge, setKnowledge] = useState<KnowledgeBase>({
+const DEFAULT_KNOWLEDGE: KnowledgeBase = {
     companyName: "नमस्ते टेक्नोलोजी (Namaste Tech)",
     content: `विवरण:
 नमस्ते टेक्नोलोजी नेपालको एक अग्रणी सफ्टवेयर र क्लाउड सेवा प्रदायक कम्पनी हो।
@@ -42,7 +37,21 @@ const App: React.FC = () => {
 - यदि फोन गर्ने व्यक्ति रिसाएमा, शान्त रहनुहोस् र सीता अर्याल (Ext 102) लाई कल ट्रान्सफर गर्ने प्रस्ताव गर्नुहोस्।
 - यदि कसैले राम शर्मा वा "Sales" सँग कुरा गर्न चाहेमा, उहाँको एक्सटेन्सन १०१ मा कल ट्रान्सफर गर्नुहोस्।
 - कर्मचारीहरूको व्यक्तिगत मोबाइल नम्बर नदिनुहोस्, सधैँ "transferCall" टुल प्रयोग गर्नुहोस्।`
+};
+
+const App: React.FC = () => {
+  const [activeTab, setActiveTab] = useState<'config' | 'crm' | 'logs' | 'connect'>('config');
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  
+  // Knowledge Base State - Initialize from Local Storage
+  const [knowledge, setKnowledge] = useState<KnowledgeBase>(() => {
+      return db.getKnowledge(DEFAULT_KNOWLEDGE);
   });
+
+  // Auto-save Knowledge Base when it changes
+  useEffect(() => {
+      db.saveKnowledge(knowledge);
+  }, [knowledge]);
 
   // Customer Data State - Initialized as empty, loaded from DB via useEffect
   const [customers, setCustomers] = useState<CustomerProfile[]>([]);
@@ -74,9 +83,10 @@ const App: React.FC = () => {
   };
 
   const handleResetDB = () => {
-    if(window.confirm("Are you sure? This will delete all history and reset to default.")) {
-        const resetData = db.reset();
+    if(window.confirm("Are you sure? This will delete all history and reset settings to default.")) {
+        const resetData = db.reset(DEFAULT_KNOWLEDGE);
         setCustomers(resetData);
+        setKnowledge(DEFAULT_KNOWLEDGE);
     }
   };
 
@@ -166,7 +176,7 @@ const App: React.FC = () => {
              )}
              
              {/* Database Controls */}
-             {(activeTab === 'crm' || activeTab === 'logs') && (
+             {(activeTab === 'crm' || activeTab === 'logs' || activeTab === 'config') && (
                  <div className="p-4 bg-slate-900/95 backdrop-blur border-t border-slate-800 shrink-0">
                      <button 
                         onClick={handleResetDB}

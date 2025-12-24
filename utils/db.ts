@@ -1,6 +1,7 @@
-import { CustomerProfile } from '../types';
+import { CustomerProfile, KnowledgeBase } from '../types';
 
 const DB_KEY = 'office_voice_agent_db_v1';
+const KNOWLEDGE_KEY = 'office_voice_agent_knowledge_v1';
 
 // Initial Mock Data (Used only when database is empty/reset)
 const INITIAL_DATA: CustomerProfile[] = [
@@ -86,10 +87,36 @@ export const db = {
   },
 
   /**
-   * Reset database to initial mock data
+   * Get stored Knowledge Base or return default
    */
-  reset: (): CustomerProfile[] => {
+  getKnowledge: (defaultKnowledge: KnowledgeBase): KnowledgeBase => {
+    try {
+        const stored = localStorage.getItem(KNOWLEDGE_KEY);
+        return stored ? JSON.parse(stored) : defaultKnowledge;
+    } catch (e) {
+        return defaultKnowledge;
+    }
+  },
+
+  /**
+   * Save Knowledge Base settings
+   */
+  saveKnowledge: (data: KnowledgeBase) => {
+    localStorage.setItem(KNOWLEDGE_KEY, JSON.stringify(data));
+  },
+
+  /**
+   * Reset database to initial mock data and clear knowledge overrides
+   */
+  reset: (defaultKnowledge?: KnowledgeBase): CustomerProfile[] => {
     localStorage.setItem(DB_KEY, JSON.stringify(INITIAL_DATA));
+    
+    if (defaultKnowledge) {
+        localStorage.setItem(KNOWLEDGE_KEY, JSON.stringify(defaultKnowledge));
+    } else {
+        localStorage.removeItem(KNOWLEDGE_KEY);
+    }
+    
     return INITIAL_DATA;
   }
 };
