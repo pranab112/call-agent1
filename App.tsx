@@ -7,6 +7,7 @@ import { db } from './utils/db';
 
 const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'config' | 'crm'>('config');
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   
   // Knowledge Base State
   const [knowledge, setKnowledge] = useState<KnowledgeBase>({
@@ -50,6 +51,12 @@ const App: React.FC = () => {
     setCustomers(data);
   }, []);
 
+  // Generic handler for updating the customer list (Add/Edit/Delete)
+  const handleCustomerUpdate = (updatedCustomers: CustomerProfile[]) => {
+      setCustomers(updatedCustomers);
+      db.saveCustomers(updatedCustomers);
+  };
+
   const handleCallComplete = (customerId: string, record: InteractionRecord) => {
       const updatedCustomers = customers.map(c => {
           if (c.id === customerId) {
@@ -61,11 +68,7 @@ const App: React.FC = () => {
           }
           return c;
       });
-      
-      // Update State
-      setCustomers(updatedCustomers);
-      // Persist to Browser Database
-      db.saveCustomers(updatedCustomers);
+      handleCustomerUpdate(updatedCustomers);
   };
 
   const handleResetDB = () => {
@@ -76,24 +79,43 @@ const App: React.FC = () => {
   };
 
   return (
-    <div className="flex flex-col md:flex-row h-screen w-screen bg-black overflow-hidden">
+    <div className="flex flex-col md:flex-row h-screen w-screen bg-black overflow-hidden relative">
       
+      {/* Mobile Overlay */}
+      {isSidebarOpen && (
+        <div 
+          className="absolute inset-0 bg-black/80 z-30 md:hidden backdrop-blur-sm"
+          onClick={() => setIsSidebarOpen(false)}
+        />
+      )}
+
       {/* Sidebar Area (Tabs + Panels) */}
-      <div className="hidden md:flex flex-col h-full z-20 shadow-2xl bg-slate-900 border-r border-slate-800 w-[400px]">
+      <div className={`
+          absolute md:relative z-40 h-full bg-slate-900 border-r border-slate-800 shadow-2xl flex flex-col
+          transition-all duration-300 ease-in-out
+          ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}
+          ${activeTab === 'crm' ? 'w-[85vw] md:w-[900px]' : 'w-[85vw] md:w-[400px]'}
+      `}>
          
          {/* Navigation Header */}
-         <div className="flex flex-col border-b border-slate-800 bg-slate-900/50 p-4 gap-4">
-             <div className="flex items-center gap-3 px-2">
-                 <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center shadow-lg shadow-blue-500/20">
-                    <svg className="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" /></svg>
-                 </div>
-                 <div>
-                    <h1 className="text-white font-bold text-sm tracking-tight">Voice Receptionist</h1>
-                    <div className="flex items-center gap-1.5">
-                       <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse"></span>
-                       <span className="text-[10px] text-slate-400 font-medium uppercase tracking-wider">System Online</span>
+         <div className="flex flex-col border-b border-slate-800 bg-slate-900/50 p-4 gap-4 shrink-0">
+             <div className="flex items-center justify-between px-2">
+                 <div className="flex items-center gap-3">
+                    <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center shadow-lg shadow-blue-500/20">
+                        <svg className="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" /></svg>
+                    </div>
+                    <div>
+                        <h1 className="text-white font-bold text-sm tracking-tight">Voice Receptionist</h1>
+                        <div className="flex items-center gap-1.5">
+                        <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse"></span>
+                        <span className="text-[10px] text-slate-400 font-medium uppercase tracking-wider">System Online</span>
+                        </div>
                     </div>
                  </div>
+                 {/* Mobile Close Button */}
+                 <button onClick={() => setIsSidebarOpen(false)} className="md:hidden text-slate-400 hover:text-white">
+                    <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                 </button>
              </div>
 
              {/* Tab Switcher */}
@@ -116,7 +138,7 @@ const App: React.FC = () => {
          </div>
 
          {/* Panel Content */}
-         <div className="flex-1 overflow-hidden relative">
+         <div className="flex-1 overflow-hidden relative flex flex-col">
              {activeTab === 'config' ? (
                  <KnowledgePanel 
                    knowledge={knowledge} 
@@ -124,12 +146,12 @@ const App: React.FC = () => {
                    disabled={false}
                  />
              ) : (
-                 <CRMPanel customers={customers} />
+                 <CRMPanel customers={customers} onUpdate={handleCustomerUpdate} />
              )}
              
              {/* Database Controls */}
              {activeTab === 'crm' && (
-                 <div className="absolute bottom-0 left-0 w-full p-4 bg-slate-900/95 backdrop-blur border-t border-slate-800">
+                 <div className="p-4 bg-slate-900/95 backdrop-blur border-t border-slate-800 shrink-0">
                      <button 
                         onClick={handleResetDB}
                         className="w-full py-3 flex items-center justify-center gap-2 text-[10px] text-red-400 border border-red-900/30 bg-red-950/20 hover:bg-red-900/30 rounded-lg uppercase font-bold tracking-wider transition-colors"
@@ -143,10 +165,15 @@ const App: React.FC = () => {
       </div>
 
       {/* Main Agent View */}
-      <div className="flex-1 h-full relative bg-slate-950 flex flex-col items-center justify-center p-4">
+      <div className="flex-1 h-full relative bg-slate-950 flex flex-col items-center justify-center p-4 transition-all duration-300">
          <div className="absolute top-4 left-4 z-10 md:hidden">
-             {/* Mobile Toggle Placeholder */}
-             <button className="text-white bg-slate-800 p-2 rounded">Menu</button>
+             {/* Mobile Toggle */}
+             <button 
+                onClick={() => setIsSidebarOpen(true)}
+                className="text-slate-300 bg-slate-800/80 backdrop-blur border border-slate-700 p-2.5 rounded-xl hover:bg-slate-700 hover:text-white transition-all shadow-lg"
+             >
+                <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" /></svg>
+             </button>
          </div>
          
          <AgentInterface 
@@ -155,7 +182,7 @@ const App: React.FC = () => {
             onCallComplete={handleCallComplete}
          />
          
-         <p className="mt-8 text-slate-600 text-xs text-center max-w-md">
+         <p className="mt-8 text-slate-600 text-xs text-center max-w-md animate-in fade-in slide-in-from-bottom-4 duration-700">
             This agent uses <span className="text-slate-400">Gemini Live API</span> with Realtime Audio Streaming. 
             <br/>Ensure your microphone permissions are enabled.
          </p>
