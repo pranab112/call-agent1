@@ -68,18 +68,34 @@ const App: React.FC = () => {
       db.saveCustomers(updatedCustomers);
   };
 
-  const handleCallComplete = (customerId: string, record: InteractionRecord) => {
-      const updatedCustomers = customers.map(c => {
-          if (c.id === customerId) {
-              return {
-                  ...c,
-                  history: [...c.history, record],
-                  lastInteraction: 'Just now'
-              };
-          }
-          return c;
-      });
-      handleCustomerUpdate(updatedCustomers);
+  const handleCallComplete = (customerId: string, record: InteractionRecord, newCustomerProfile?: CustomerProfile) => {
+      // 1. Handle New/Unknown Caller (TEMP ID)
+      if (customerId === 'TEMP' && newCustomerProfile) {
+          const newId = `C-${Date.now()}`;
+          const newCustomer: CustomerProfile = {
+              ...newCustomerProfile,
+              id: newId,
+              history: [record],
+              lastInteraction: 'Just now'
+          };
+          
+          // Prepend new customer to list so they appear at the top
+          handleCustomerUpdate([newCustomer, ...customers]);
+      } 
+      // 2. Handle Existing Customer
+      else {
+          const updatedCustomers = customers.map(c => {
+              if (c.id === customerId) {
+                  return {
+                      ...c,
+                      history: [...c.history, record],
+                      lastInteraction: 'Just now'
+                  };
+              }
+              return c;
+          });
+          handleCustomerUpdate(updatedCustomers);
+      }
   };
 
   const handleResetDB = () => {

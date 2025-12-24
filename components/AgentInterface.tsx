@@ -6,7 +6,7 @@ import { createBlob, decode, decodeAudioData } from '../utils/audioUtils';
 interface AgentInterfaceProps {
   knowledge: KnowledgeBase;
   customers: CustomerProfile[];
-  onCallComplete: (customerId: string, record: InteractionRecord) => void;
+  onCallComplete: (customerId: string, record: InteractionRecord, newCustomerProfile?: CustomerProfile) => void;
 }
 
 type CallState = 'IDLE' | 'RINGING' | 'ACTIVE' | 'TRANSFERRING' | 'SUMMARY';
@@ -437,7 +437,13 @@ const AgentInterface: React.FC<AgentInterfaceProps> = ({ knowledge, customers, o
             status: transferTarget ? 'Transferred' : 'Resolved',
             transferDestination: transferTarget?.destination
         };
-        onCallComplete(activeCustomer.id, newRecord);
+
+        if (activeCustomer.id === 'TEMP') {
+            // Pass the entire profile data if it's a new temporary customer
+            onCallComplete(activeCustomer.id, newRecord, activeCustomer);
+        } else {
+            onCallComplete(activeCustomer.id, newRecord);
+        }
       }
 
       setCallState('IDLE');
