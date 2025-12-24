@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useCallback, useState } from 'react';
 import { KnowledgeBase } from '../types';
 
 interface KnowledgePanelProps {
@@ -8,6 +8,54 @@ interface KnowledgePanelProps {
 }
 
 const KnowledgePanel: React.FC<KnowledgePanelProps> = ({ knowledge, setKnowledge, disabled }) => {
+  const [isDragging, setIsDragging] = useState(false);
+
+  const handleFileRead = (file: File) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const text = e.target?.result;
+      if (typeof text === 'string') {
+        setKnowledge(prev => ({
+          ...prev,
+          content: prev.content + "\n\n--- IMPORTED FILE: " + file.name + " ---\n\n" + text
+        }));
+      }
+    };
+    reader.readAsText(file);
+  };
+
+  const onDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+  }, []);
+
+  const onDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+  }, []);
+
+  const onDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    if (disabled) return;
+    
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      Array.from(e.dataTransfer.files).forEach((file: File) => {
+         if (file.type === "text/plain" || file.name.endsWith('.md') || file.name.endsWith('.csv') || file.name.endsWith('.json')) {
+            handleFileRead(file);
+         } else {
+            alert(`File ${file.name} not supported. Please upload .txt, .md, .json, or .csv`);
+         }
+      });
+    }
+  }, [disabled, setKnowledge]);
+
+  const handleFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0) {
+      Array.from(e.target.files).forEach((file: File) => handleFileRead(file));
+    }
+  };
+
   return (
     <div className="flex flex-col h-full bg-slate-900 border-r border-slate-800 p-6 w-full md:w-96 overflow-y-auto custom-scrollbar">
       
@@ -46,13 +94,48 @@ const KnowledgePanel: React.FC<KnowledgePanelProps> = ({ knowledge, setKnowledge
             </div>
 
             <div className="flex-1 flex flex-col">
-              <label className="block text-xs font-medium text-slate-400 mb-1">Instructions & Data</label>
+              <label className="block text-xs font-medium text-slate-400 mb-1">
+                 Instructions & Data ({knowledge.content.length} chars)
+              </label>
+              
+              {/* File Upload Zone */}
+              <div 
+                onDragOver={onDragOver}
+                onDragLeave={onDragLeave}
+                onDrop={onDrop}
+                className={`relative mb-2 group border-2 border-dashed rounded-lg p-4 text-center transition-colors ${isDragging ? 'border-purple-400 bg-purple-400/10' : 'border-slate-700 hover:border-slate-500 bg-slate-900'}`}
+              >
+                 <input 
+                    type="file" 
+                    multiple 
+                    onChange={handleFileInput} 
+                    accept=".txt,.md,.json,.csv"
+                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-not-allowed"
+                    disabled={disabled}
+                 />
+                 <div className="pointer-events-none">
+                    <svg className="w-6 h-6 text-slate-400 mx-auto mb-1" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" /></svg>
+                    <p className="text-[10px] text-slate-400">
+                       <span className="text-purple-400 font-bold">Upload Files</span> or drag & drop<br/>
+                       (.txt, .csv, .json, .md)
+                    </p>
+                 </div>
+              </div>
+
               <textarea
                 value={knowledge.content}
                 onChange={(e) => setKnowledge(prev => ({ ...prev, content: e.target.value }))}
                 disabled={disabled}
-                className="w-full h-64 bg-slate-900 border border-slate-700 rounded-md px-3 py-3 text-xs text-slate-300 focus:border-purple-500 outline-none resize-none disabled:opacity-50 leading-relaxed custom-scrollbar font-mono"
+                placeholder="Or type/paste your data here..."
+                className="w-full h-96 bg-slate-900 border border-slate-700 rounded-md px-3 py-3 text-xs text-slate-300 focus:border-purple-500 outline-none resize-none disabled:opacity-50 leading-relaxed custom-scrollbar font-mono"
               />
+              <button 
+                onClick={() => setKnowledge(prev => ({ ...prev, content: '' }))}
+                className="text-[10px] text-red-400 underline hover:text-red-300 self-end mt-1"
+                disabled={disabled}
+              >
+                Clear Data
+              </button>
             </div>
           </div>
         </div>

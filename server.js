@@ -232,8 +232,25 @@ fastify.register(async (fastify) => {
                             media: { mimeType: "audio/pcm;rate=16000", data: b64pcm } 
                         });
                     });
+                } else if (data.event === 'stop') {
+                    if (sessionPromise) {
+                        sessionPromise.then(session => session.close()).catch(() => {});
+                    }
                 }
             } catch (e) { console.error(e); }
+        });
+
+        connection.socket.on('close', async () => {
+            console.log("Twilio Socket Closed");
+            if (sessionPromise) {
+                try {
+                    const session = await sessionPromise;
+                    session.close();
+                    console.log("Closed Gemini Session");
+                } catch (e) {
+                    console.error("Error closing Gemini session", e);
+                }
+            }
         });
     });
 });
