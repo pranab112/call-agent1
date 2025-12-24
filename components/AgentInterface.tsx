@@ -56,28 +56,52 @@ const AgentInterface: React.FC<AgentInterfaceProps> = ({ knowledge, customers, o
   const processorRef = useRef<ScriptProcessorNode | null>(null);
   const sessionRef = useRef<any>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  
+  // Track last analyzed text to prevent duplicate API calls
+  const lastAnalyzedTextRef = useRef<string>("");
 
   // Refs for Visualizer
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animationRef = useRef<number>(0);
 
-  // --- HELPER: Simple Sentiment Analysis ---
+  // --- HELPER: Advanced AI Sentiment Analysis ---
   useEffect(() => {
     if (transcript.length === 0) return;
     const lastItem = transcript[transcript.length - 1];
+
+    // Trigger analysis only on new, final user messages
     if (lastItem.role === 'user' && lastItem.isFinal) {
-      const text = lastItem.text.toLowerCase();
-      // Keywords for demo purposes (English + Nepali Romanized)
-      const negativeWords = ['bad', 'slow', 'angry', 'issue', 'problem', 'error', 'broken', 'expensive', 'samasya', 'bigryo', 'bekkar'];
-      const positiveWords = ['good', 'great', 'thanks', 'happy', 'fast', 'helpful', 'amazing', 'dhanyabad', 'ramro', 'sahi'];
-      
-      let change = 0;
-      if (negativeWords.some(w => text.includes(w))) change -= 20;
-      if (positiveWords.some(w => text.includes(w))) change += 10;
-      
-      setSentimentScore(prev => Math.min(100, Math.max(0, prev + change)));
+        if (lastItem.text !== lastAnalyzedTextRef.current && lastItem.text.trim().length > 2) {
+            lastAnalyzedTextRef.current = lastItem.text;
+            analyzeSentiment(lastItem.text);
+        }
     }
   }, [transcript]);
+
+  const analyzeSentiment = async (text: string) => {
+      try {
+        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+        const response = await ai.models.generateContent({
+            model: 'gemini-3-flash-preview',
+            contents: `Analyze the sentiment of this text spoken by a customer during a customer support call. 
+            Return a JSON object with a single field "score" (number 0-100).
+            0 = Very Negative/Angry, 50 = Neutral, 100 = Very Positive/Happy.
+            Text: "${text}"`,
+            config: {
+                responseMimeType: 'application/json'
+            }
+        });
+
+        const result = JSON.parse(response.text);
+        if (typeof result.score === 'number') {
+            // Apply weighted moving average: 60% previous score, 40% new utterance
+            setSentimentScore(prev => Math.round((prev * 0.6) + (result.score * 0.4)));
+        }
+      } catch (err) {
+        // Fail silently to not disrupt the UI
+        console.warn("Sentiment analysis error:", err);
+      }
+  };
 
   const getSentimentColor = (score: number) => {
     if (score < 30) return 'text-red-500';
@@ -624,8 +648,6 @@ const AgentInterface: React.FC<AgentInterfaceProps> = ({ knowledge, customers, o
                     <div className="mt-6 px-4 py-2 bg-blue-500/10 border border-blue-500/20 rounded-xl flex flex-col items-center backdrop-blur-md">
                         <span className="text-blue-400 text-[10px] font-bold tracking-wider uppercase mb-1">CRM Match Found</span>
                         <div className="flex gap-2 text-xs text-slate-300">
-                             <span>{activeCustomer.plan} Plan</span>
-                             <span>•</span>
                              <span>{activeCustomer.status}</span>
                         </div>
                     </div>
@@ -661,9 +683,6 @@ const AgentInterface: React.FC<AgentInterfaceProps> = ({ knowledge, customers, o
                              <h4 className="text-white font-bold text-sm truncate">{activeCustomer.name}</h4>
                              <span className="text-[10px] text-slate-400 uppercase tracking-wider">{activeCustomer.id}</span>
                          </div>
-                         <div className={`px-2 py-1 rounded text-[10px] font-bold shrink-0 ${activeCustomer.plan === 'Enterprise' ? 'bg-purple-900/50 text-purple-200 border border-purple-700/30' : 'bg-blue-900/50 text-blue-200 border border-blue-700/30'}`}>
-                             {activeCustomer.plan}
-                         </div>
                     </div>
                     <div className="grid grid-cols-2 gap-2">
                         <div className="bg-slate-900/50 rounded p-1.5">
@@ -671,8 +690,8 @@ const AgentInterface: React.FC<AgentInterfaceProps> = ({ knowledge, customers, o
                             <span className="text-[10px] text-slate-300 truncate block">{activeCustomer.history.length} Interactions</span>
                         </div>
                         <div className="bg-slate-900/50 rounded p-1.5">
-                            <span className="block text-[9px] text-slate-500 uppercase font-semibold">Acct Value</span>
-                            <span className="text-[10px] text-green-400 font-mono">{activeCustomer.accountValue}</span>
+                            <span className="block text-[9px] text-slate-500 uppercase font-semibold">Status</span>
+                            <span className="text-[10px] text-blue-300 truncate block">{activeCustomer.status}</span>
                         </div>
                     </div>
                 </div>

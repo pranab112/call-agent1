@@ -1,12 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import KnowledgePanel from './components/KnowledgePanel';
 import CRMPanel from './components/CRMPanel';
+import CallHistoryPanel from './components/CallHistoryPanel';
+import ConnectPanel from './components/ConnectPanel';
 import AgentInterface from './components/AgentInterface';
 import { KnowledgeBase, CustomerProfile, InteractionRecord } from './types';
 import { db } from './utils/db';
 
 const App: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<'config' | 'crm'>('config');
+  const [activeTab, setActiveTab] = useState<'config' | 'crm' | 'logs' | 'connect'>('config');
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   
   // Knowledge Base State
@@ -94,7 +96,7 @@ const App: React.FC = () => {
           absolute md:relative z-40 h-full bg-slate-900 border-r border-slate-800 shadow-2xl flex flex-col
           transition-all duration-300 ease-in-out
           ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}
-          ${activeTab === 'crm' ? 'w-[85vw] md:w-[900px]' : 'w-[85vw] md:w-[400px]'}
+          ${activeTab === 'crm' || activeTab === 'logs' ? 'w-[85vw] md:w-[900px]' : 'w-[85vw] md:w-[400px]'}
       `}>
          
          {/* Navigation Header */}
@@ -122,17 +124,27 @@ const App: React.FC = () => {
              <div className="flex bg-slate-950/50 p-1 rounded-xl border border-slate-800">
                 <button 
                     onClick={() => setActiveTab('config')}
-                    className={`flex-1 flex items-center justify-center gap-2 py-2 px-4 rounded-lg text-xs font-bold transition-all duration-200 ${activeTab === 'config' ? 'bg-slate-800 text-blue-400 shadow-sm' : 'text-slate-500 hover:text-slate-300'}`}
+                    className={`flex-1 flex items-center justify-center gap-2 py-2 px-2 rounded-lg text-xs font-bold transition-all duration-200 ${activeTab === 'config' ? 'bg-slate-800 text-blue-400 shadow-sm' : 'text-slate-500 hover:text-slate-300'}`}
                 >
-                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
                     Setup
                 </button>
                 <button 
-                    onClick={() => setActiveTab('crm')}
-                    className={`flex-1 flex items-center justify-center gap-2 py-2 px-4 rounded-lg text-xs font-bold transition-all duration-200 ${activeTab === 'crm' ? 'bg-slate-800 text-purple-400 shadow-sm' : 'text-slate-500 hover:text-slate-300'}`}
+                    onClick={() => setActiveTab('connect')}
+                    className={`flex-1 flex items-center justify-center gap-2 py-2 px-2 rounded-lg text-xs font-bold transition-all duration-200 ${activeTab === 'connect' ? 'bg-slate-800 text-orange-400 shadow-sm' : 'text-slate-500 hover:text-slate-300'}`}
                 >
-                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" /></svg>
-                    CRM Data
+                    Connect
+                </button>
+                <button 
+                    onClick={() => setActiveTab('crm')}
+                    className={`flex-1 flex items-center justify-center gap-2 py-2 px-2 rounded-lg text-xs font-bold transition-all duration-200 ${activeTab === 'crm' ? 'bg-slate-800 text-purple-400 shadow-sm' : 'text-slate-500 hover:text-slate-300'}`}
+                >
+                    CRM
+                </button>
+                <button 
+                    onClick={() => setActiveTab('logs')}
+                    className={`flex-1 flex items-center justify-center gap-2 py-2 px-2 rounded-lg text-xs font-bold transition-all duration-200 ${activeTab === 'logs' ? 'bg-slate-800 text-green-400 shadow-sm' : 'text-slate-500 hover:text-slate-300'}`}
+                >
+                    Logs
                 </button>
              </div>
          </div>
@@ -145,12 +157,16 @@ const App: React.FC = () => {
                    setKnowledge={setKnowledge} 
                    disabled={false}
                  />
-             ) : (
+             ) : activeTab === 'connect' ? (
+                 <ConnectPanel />
+             ) : activeTab === 'crm' ? (
                  <CRMPanel customers={customers} onUpdate={handleCustomerUpdate} />
+             ) : (
+                 <CallHistoryPanel customers={customers} />
              )}
              
              {/* Database Controls */}
-             {activeTab === 'crm' && (
+             {(activeTab === 'crm' || activeTab === 'logs') && (
                  <div className="p-4 bg-slate-900/95 backdrop-blur border-t border-slate-800 shrink-0">
                      <button 
                         onClick={handleResetDB}

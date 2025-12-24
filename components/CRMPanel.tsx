@@ -27,7 +27,7 @@ const CRMPanel: React.FC<CRMPanelProps> = ({ customers, onUpdate }) => {
     if (!selectedCustomerId && filteredCustomers.length > 0) {
       setSelectedCustomerId(filteredCustomers[0].id);
     }
-  }, [filteredCustomers.length, selectedCustomerId]); // Removed filteredCustomers dependency to prevent jumping
+  }, [filteredCustomers.length, selectedCustomerId]); 
 
   const selectedCustomer = customers.find(c => c.id === selectedCustomerId);
 
@@ -39,9 +39,9 @@ const CRMPanel: React.FC<CRMPanelProps> = ({ customers, onUpdate }) => {
           name: '',
           phone: '',
           email: '',
-          plan: 'Standard',
+          plan: 'Standard', // Default internal value, hidden from UI
           status: 'New',
-          accountValue: 'Rs. 0/yr',
+          accountValue: '0', // Default internal value
           history: []
       });
       setIsModalOpen(true);
@@ -69,7 +69,7 @@ const CRMPanel: React.FC<CRMPanelProps> = ({ customers, onUpdate }) => {
               email: formData.email || '',
               plan: (formData.plan as any) || 'Standard',
               status: (formData.status as any) || 'New',
-              accountValue: formData.accountValue || 'Rs. 0/yr',
+              accountValue: formData.accountValue || '0',
               lastInteraction: 'Never',
               history: []
           };
@@ -159,14 +159,10 @@ const CRMPanel: React.FC<CRMPanelProps> = ({ customers, onUpdate }) => {
                   </div>
                   <p className="text-slate-500 text-[11px] font-mono mb-2 truncate">{customer.phone}</p>
                   <div className="flex items-center gap-3">
-                     <span className="text-[10px] text-slate-500 flex items-center gap-1">
-                        <span className="w-1.5 h-1.5 rounded-full bg-slate-600"></span>
-                        {customer.plan}
-                     </span>
                      {customer.history.length > 0 && (
                          <span className="text-[10px] text-slate-500 flex items-center gap-1">
                             <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-                            {customer.history.length}
+                            {customer.history.length} Interactions
                          </span>
                      )}
                   </div>
@@ -204,10 +200,6 @@ const CRMPanel: React.FC<CRMPanelProps> = ({ customers, onUpdate }) => {
                     >
                         Edit Profile
                     </button>
-                    <div className="text-right bg-slate-900/50 px-3 py-1.5 rounded-xl border border-slate-800">
-                       <div className="text-[9px] text-slate-500 uppercase font-bold tracking-wider mb-0.5">Value</div>
-                       <div className="text-sm font-mono text-green-400 font-bold">{selectedCustomer.accountValue}</div>
-                    </div>
                 </div>
               </div>
             </div>
@@ -368,41 +360,17 @@ const CRMPanel: React.FC<CRMPanelProps> = ({ customers, onUpdate }) => {
                             />
                           </div>
                       </div>
-                      <div className="grid grid-cols-2 gap-3">
-                           <div>
-                              <label className="text-[10px] uppercase font-bold text-slate-500 block mb-1">Plan</label>
-                              <select 
-                                  value={formData.plan} 
-                                  onChange={(e) => setFormData({...formData, plan: e.target.value as any})}
-                                  className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-sm text-white focus:border-blue-500 outline-none"
-                              >
-                                  <option value="Standard">Standard</option>
-                                  <option value="Premium">Premium</option>
-                                  <option value="Enterprise">Enterprise</option>
-                              </select>
-                           </div>
-                           <div>
-                              <label className="text-[10px] uppercase font-bold text-slate-500 block mb-1">Status</label>
-                              <select 
-                                  value={formData.status} 
-                                  onChange={(e) => setFormData({...formData, status: e.target.value as any})}
-                                  className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-sm text-white focus:border-blue-500 outline-none"
-                              >
-                                  <option value="Active">Active</option>
-                                  <option value="New">New</option>
-                                  <option value="Churn Risk">Churn Risk</option>
-                              </select>
-                           </div>
-                      </div>
                       <div>
-                          <label className="text-[10px] uppercase font-bold text-slate-500 block mb-1">Account Value</label>
-                          <input 
-                              type="text" 
-                              value={formData.accountValue || ''} 
-                              onChange={(e) => setFormData({...formData, accountValue: e.target.value})}
-                              className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-sm text-white focus:border-blue-500 outline-none font-mono"
-                              placeholder="e.g. Rs. 50,000/yr"
-                          />
+                          <label className="text-[10px] uppercase font-bold text-slate-500 block mb-1">Status</label>
+                          <select 
+                              value={formData.status} 
+                              onChange={(e) => setFormData({...formData, status: e.target.value as any})}
+                              className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-sm text-white focus:border-blue-500 outline-none"
+                          >
+                              <option value="Active">Active</option>
+                              <option value="New">New</option>
+                              <option value="Churn Risk">Churn Risk</option>
+                          </select>
                       </div>
                   </div>
 
