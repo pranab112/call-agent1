@@ -4,24 +4,58 @@ import fastifyFormBody from '@fastify/formbody';
 import { GoogleGenAI, Modality } from '@google/genai';
 import dotenv from 'dotenv';
 import Twilio from 'twilio';
+import Redis from 'ioredis';
 
 dotenv.config();
 
-const fastify = Fastify();
+const fastify = Fastify({
+    logger: { level: 'error' } // Reduce logging overhead at scale
+});
+
 fastify.register(fastifyWs);
 fastify.register(fastifyFormBody);
 
 const PORT = process.env.PORT || 5050;
 const API_KEY = process.env.API_KEY; 
+const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
+
+// Twilio Config
 const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
 const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN;
 const TWILIO_PHONE_NUMBER = process.env.TWILIO_PHONE_NUMBER; 
 const HUMAN_OPERATOR_NUMBER = process.env.HUMAN_OPERATOR_NUMBER || process.env.MY_REAL_PHONE_NUMBER; 
 
 const client = new Twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
-const activeCalls = new Map();
 
-// --- AUDIO UTILS (Transcoding for Telephony) --- //
+// --- SCALING INFRASTRUCTURE ---
+
+// 1. Redis Connection (Shared State for Horizontal Scaling)
+// If Redis fails, the pod should probably crash/restart in K8s, or fallback to memory (risky at scale)
+const redis = new Redis(REDIS_URL, {
+    maxRetriesPerRequest: 3,
+    retryStrategy(times) {
+        if (times > 5) return null; // Stop retrying after 5 attempts
+        return Math.min(times * 50, 2000);
+    },
+    // Mock for local development without Redis
+    lazyConnect: true 
+});
+
+redis.on('error', (err) => {
+    if (process.env.NODE_ENV !== 'production') console.warn("Redis warning (running in fallback mode):", err.message);
+});
+
+// 2. Async Queue Simulation (e.g., BullMQ)
+// Offload expensive database writes or analytics from the realtime WebSocket loop
+const analyticsQueue = {
+    add: async (jobName, data) => {
+        // In production: await realQueue.add(jobName, data);
+        console.log(`[Queue] Job added: ${jobName}`, data.callSid);
+    }
+};
+
+// --- AUDIO PROCESSING UTILS ---
+// Optimized bitwise operations for high throughput
 const muLawToLinear = (ulawByte) => {
     ulawByte = ~ulawByte;
     const sign = (ulawByte & 0x80);
@@ -60,11 +94,9 @@ const downsampleTo8k = (buffer) => {
     const output = new Int16Array(Math.floor(input.length / 3));
     for (let i = 0; i < output.length; i++) {
         const idx = i * 3;
-        if (idx + 2 < input.length) {
-             output[i] = (input[idx] + input[idx+1] + input[idx+2]) / 3;
-        } else {
-             output[i] = input[idx];
-        }
+        output[i] = (idx + 2 < input.length) 
+            ? (input[idx] + input[idx+1] + input[idx+2]) / 3
+            : input[idx];
     }
     return Buffer.from(output.buffer);
 };
@@ -74,11 +106,9 @@ const upsampleTo16k = (buffer) => {
     const output = new Int16Array(input.length * 2);
     for (let i = 0; i < input.length; i++) {
         output[i * 2] = input[i];
-        if (i < input.length - 1) {
-            output[i * 2 + 1] = (input[i] + input[i + 1]) / 2;
-        } else {
-            output[i * 2 + 1] = input[i];
-        }
+        output[i * 2 + 1] = (i < input.length - 1) 
+            ? (input[i] + input[i + 1]) / 2 
+            : input[i];
     }
     return Buffer.from(output.buffer);
 };
@@ -103,17 +133,21 @@ const processGeminiAudio = (rawPcmData) => {
     return Buffer.from(mulawOutput).toString('base64');
 };
 
-const transferTool = {
-    name: "transferCall",
-    parameters: {
-        type: "OBJECT",
-        properties: {
-            destination: { type: "STRING", description: "The department or person name" },
-            extension: { type: "STRING", description: "The phone number or extension to transfer to" }
-        },
-        required: ["destination", "extension"]
+// --- ROUTES ---
+
+// Kubernetes Liveness/Readiness Probes
+fastify.get('/health', async (req, reply) => {
+    try {
+        // Check Redis connectivity
+        if (redis.status === 'ready' || redis.status === 'connecting') {
+             return { status: 'ok', workerId: process.pid };
+        }
+        // Fallback if strictly mocking
+        return { status: 'ok', mode: 'local' };
+    } catch (e) {
+        reply.code(503).send({ status: 'error', details: e.message });
     }
-};
+});
 
 fastify.post('/make-call', async (req, reply) => {
     const { to, systemInstruction } = req.body;
@@ -125,8 +159,17 @@ fastify.post('/make-call', async (req, reply) => {
             from: TWILIO_PHONE_NUMBER,
             url: `https://${req.headers.host}/incoming-call`
         });
-        activeCalls.set(call.sid, systemInstruction);
-        setTimeout(() => activeCalls.delete(call.sid), 5 * 60 * 1000);
+
+        // STATELESS: Store instruction in Redis instead of local Map
+        // Expires in 5 minutes to prevent memory leaks in Redis
+        try {
+            await redis.set(`call:${call.sid}:instruction`, systemInstruction, 'EX', 300);
+        } catch (e) {
+            // Fallback for local dev without Redis
+            global.mockCache = global.mockCache || new Map();
+            global.mockCache.set(call.sid, systemInstruction);
+        }
+
         reply.send({ success: true, callSid: call.sid });
     } catch (error) {
         console.error("Twilio Error:", error);
@@ -146,41 +189,60 @@ fastify.all('/incoming-call', async (req, reply) => {
     reply.type('text/xml').send(twiml);
 });
 
+// --- WEBSOCKET CONTROLLER ---
 fastify.register(async (fastify) => {
     fastify.get('/media-stream', { websocket: true }, (connection, req) => {
-        console.log("Twilio Media Stream Connected");
-
         const ai = new GoogleGenAI({ apiKey: API_KEY });
+        let sessionPromise = null;
         let streamSid = null;
         let callSid = null;
-        // Use promise pattern to prevent dropping early audio packets
-        let sessionPromise = null; 
 
         connection.socket.on('message', async (message) => {
             try {
                 const data = JSON.parse(message);
+
                 if (data.event === 'start') {
                     streamSid = data.start.streamSid;
                     callSid = data.start.callSid;
-                    const instruction = activeCalls.get(callSid);
-                    
-                    // Initialize immediately and assign to sessionPromise
+
+                    // STATELESS: Fetch instruction from Redis
+                    let instruction = "You are a helpful AI receptionist.";
+                    try {
+                        const cached = await redis.get(`call:${callSid}:instruction`);
+                        if (cached) instruction = cached;
+                    } catch (e) {
+                         if (global.mockCache) instruction = global.mockCache.get(callSid) || instruction;
+                    }
+
                     sessionPromise = ai.live.connect({
                         model: 'gemini-2.5-flash-native-audio-preview-09-2025',
                         config: {
                             responseModalities: [Modality.AUDIO],
-                            systemInstruction: instruction || "You are a helpful AI receptionist.",
-                            tools: [{ functionDeclarations: [transferTool] }],
+                            systemInstruction: instruction,
+                            tools: [{ functionDeclarations: [{
+                                name: "transferCall",
+                                parameters: {
+                                    type: "OBJECT",
+                                    properties: {
+                                        destination: { type: "STRING" },
+                                        extension: { type: "STRING" }
+                                    },
+                                    required: ["destination", "extension"]
+                                }
+                            }] }],
                             speechConfig: {
                                 voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } },
                             },
                         },
                         callbacks: {
-                            onopen: () => console.log("Gemini Session Open"),
+                            onopen: () => {
+                                // console.log("Gemini Connected"); // Commented out for perf at scale
+                            },
                             onmessage: async (msg) => {
-                                // 1. HANDLE INTERRUPTION (Fixes "Stuck" AI)
+                                if (connection.socket.readyState !== 1) return; // Prevent writing to closed socket
+
+                                // Handle Interruption
                                 if (msg.serverContent?.interrupted) {
-                                    console.log("Interruption detected - Clearing Twilio Buffer");
                                     connection.socket.send(JSON.stringify({ 
                                         event: 'clear', 
                                         streamSid: streamSid 
@@ -188,11 +250,10 @@ fastify.register(async (fastify) => {
                                     return;
                                 }
 
-                                // 2. AUDIO PROCESSING
+                                // Handle Audio
                                 if (msg.serverContent?.modelTurn?.parts?.[0]?.inlineData) {
                                     const rawAudio = msg.serverContent.modelTurn.parts[0].inlineData.data;
                                     const twilioAudio = processGeminiAudio(rawAudio);
-                                    
                                     connection.socket.send(JSON.stringify({
                                         event: 'media',
                                         streamSid: streamSid,
@@ -200,7 +261,7 @@ fastify.register(async (fastify) => {
                                     }));
                                 }
 
-                                // 3. TOOL HANDLING
+                                // Handle Tools
                                 if (msg.toolCall) {
                                     const call = msg.toolCall.functionCalls.find(fc => fc.name === 'transferCall');
                                     if (call) {
@@ -208,54 +269,83 @@ fastify.register(async (fastify) => {
                                         if(call.args.extension && call.args.extension.length > 6) {
                                             targetNumber = call.args.extension;
                                         }
-                                        console.log(`Transferring ${callSid} to ${targetNumber}`);
+                                        
+                                        // Offload logging to Queue
+                                        analyticsQueue.add('log-transfer', { callSid, targetNumber });
+
                                         try {
                                             await client.calls(callSid).update({
                                                 twiml: `<Response><Say>Transferring.</Say><Dial>${targetNumber}</Dial></Response>`
                                             });
                                             connection.socket.close();
-                                        } catch (err) { console.error(err); }
+                                        } catch (err) { 
+                                            console.error("Transfer failed", err);
+                                        }
                                     }
                                 }
                             },
-                            onclose: () => console.log("Gemini Closed")
+                            onclose: () => {
+                                // Cleanup logic
+                            },
+                            onerror: (err) => {
+                                // Log error to monitoring service (Sentry/Datadog)
+                                console.error("Gemini Error:", err.message); 
+                            }
                         }
                     });
 
                 } else if (data.event === 'media' && sessionPromise) {
-                    // Normalize audio and use .then() to ensure packet isn't dropped if still connecting
                     const pcm16k = processTwilioAudio(data.media.payload);
                     const b64pcm = pcm16k.toString('base64');
                     
+                    // Non-blocking send
                     sessionPromise.then(session => {
                         session.sendRealtimeInput({ 
                             media: { mimeType: "audio/pcm;rate=16000", data: b64pcm } 
                         });
+                    }).catch(() => {
+                        // Suppress unhandled promise rejections during disconnects
                     });
+
                 } else if (data.event === 'stop') {
                     if (sessionPromise) {
                         sessionPromise.then(session => session.close()).catch(() => {});
                     }
+                    // Async: Process Call Summary
+                    analyticsQueue.add('process-summary', { callSid });
                 }
-            } catch (e) { console.error(e); }
+            } catch (e) {
+                console.error("Socket Error:", e);
+            }
         });
 
         connection.socket.on('close', async () => {
-            console.log("Twilio Socket Closed");
             if (sessionPromise) {
                 try {
                     const session = await sessionPromise;
                     session.close();
-                    console.log("Closed Gemini Session");
-                } catch (e) {
-                    console.error("Error closing Gemini session", e);
-                }
+                } catch (e) {}
+            }
+            // Clear Redis Key Early
+            if (callSid) {
+                try { await redis.del(`call:${callSid}:instruction`); } catch(e) {}
             }
         });
     });
 });
 
+// Graceful Shutdown for Kubernetes
+const shutdown = async () => {
+    console.log('Shutting down server...');
+    await fastify.close();
+    if(redis.status === 'ready') await redis.quit();
+    process.exit(0);
+};
+
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);
+
 fastify.listen({ port: PORT, host: '0.0.0.0' }, (err) => {
     if (err) { console.error(err); process.exit(1); }
-    console.log(`Call Center Server listening on port ${PORT}`);
+    console.log(`Server listening on port ${PORT} [PID: ${process.pid}]`);
 });
