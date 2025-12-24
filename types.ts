@@ -47,3 +47,11 @@ export enum ConnectionState {
   CONNECTED = 'CONNECTED',
   ERROR = 'ERROR'
 }
+
+export interface SipConfig {
+  username: string;
+  password?: string;
+  domain: string;
+  websocketUrl: string;
+  isConnected: boolean;
+}

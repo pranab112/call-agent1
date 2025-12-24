@@ -130,6 +130,15 @@ const processTwilioAudio = (base64Data) => {
     return upsampleTo16k(Buffer.from(pcmBuffer.buffer));
 };
 
+const processRawPCMU = (rawBuffer) => {
+    // Treat raw buffer as PCMU (G.711 u-law) - Standard for SIP
+    const pcmBuffer = new Int16Array(rawBuffer.length);
+    for (let i = 0; i < rawBuffer.length; i++) {
+        pcmBuffer[i] = muLawToLinear(rawBuffer[i]);
+    }
+    return upsampleTo16k(Buffer.from(pcmBuffer.buffer));
+};
+
 const processGeminiAudio = (rawPcmData) => {
     const pcmBuffer = Buffer.from(rawPcmData, 'base64');
     const downsampled = downsampleTo8k(pcmBuffer);
@@ -165,13 +174,12 @@ fastify.register(async (fastify) => {
         const ai = new GoogleGenAI({ apiKey: API_KEY });
         let sessionPromise = null;
         let streamSid = null;
-        let callSid = null;
+        let callSid = 'LINPHONE-' + Date.now();
         let isCleanedUp = false;
 
         console.log("📞 System: Call Connected via WebSocket");
 
         // --- UNIFIED CLEANUP FUNCTION ---
-        // This runs if the call ends normally OR if the socket breaks
         const cleanupSession = async () => {
             if (isCleanedUp) return;
             isCleanedUp = true;
@@ -189,96 +197,118 @@ fastify.register(async (fastify) => {
             }
         };
 
+        // --- GEMINI CONNECTION HELPER ---
+        const ensureSession = () => {
+            if (sessionPromise) return sessionPromise;
+            
+            let instruction = "You are a helpful office receptionist for Namaste Tech.";
+            
+            sessionPromise = ai.live.connect({
+                model: 'gemini-2.5-flash-native-audio-preview-09-2025',
+                config: {
+                    responseModalities: [Modality.AUDIO],
+                    systemInstruction: instruction,
+                    tools: [{ functionDeclarations: [{
+                        name: "transferCall",
+                        parameters: {
+                            type: "OBJECT",
+                            properties: {
+                                destination: { type: "STRING" },
+                                extension: { type: "STRING" }
+                            },
+                            required: ["destination", "extension"]
+                        }
+                    }] }],
+                    speechConfig: {
+                        voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } },
+                    },
+                },
+                callbacks: {
+                    onopen: () => console.log("✨ System: Gemini AI Connected"),
+                    onmessage: async (msg) => {
+                        if (connection.socket.readyState !== 1) return;
+
+                        if (msg.serverContent?.interrupted) {
+                            // If Twilio:
+                            if(streamSid) connection.socket.send(JSON.stringify({ event: 'clear', streamSid }));
+                            return;
+                        }
+
+                        if (msg.serverContent?.modelTurn?.parts?.[0]?.inlineData) {
+                            const rawAudio = msg.serverContent.modelTurn.parts[0].inlineData.data;
+                            const telephonyAudio = processGeminiAudio(rawAudio);
+                            
+                            try {
+                                if (streamSid) {
+                                    // Twilio Format
+                                    connection.socket.send(JSON.stringify({
+                                        event: 'media',
+                                        streamSid: streamSid,
+                                        media: { payload: telephonyAudio }
+                                    }));
+                                } else {
+                                    // Raw Format (Standard SIP) - Send Raw Binary
+                                    const binaryData = Buffer.from(telephonyAudio, 'base64');
+                                    connection.socket.send(binaryData);
+                                }
+                            } catch (err) {
+                                cleanupSession();
+                            }
+                        }
+
+                        if (msg.toolCall) {
+                            const call = msg.toolCall.functionCalls.find(fc => fc.name === 'transferCall');
+                            if (call) {
+                                console.log(`🔀 System: Transferring call to ${call.args.extension}`);
+                            }
+                        }
+                    },
+                    onerror: (err) => console.error("Gemini Error:", err.message)
+                }
+            });
+            return sessionPromise;
+        };
+
         connection.socket.on('message', async (message) => {
             try {
+                // CASE 1: RAW AUDIO (Standard SIP/Linphone Bridge)
+                // If message is a Buffer, treat it as raw PCMU (G.711 u-law)
+                if (Buffer.isBuffer(message)) {
+                    ensureSession();
+                    const pcm16k = processRawPCMU(message);
+                    const rms = calculateRMS(pcm16k);
+                    
+                    if (rms > NOISE_THRESHOLD) {
+                        const b64pcm = pcm16k.toString('base64');
+                        ensureSession().then(session => {
+                            session.sendRealtimeInput({ 
+                                media: { mimeType: "audio/pcm;rate=16000", data: b64pcm } 
+                            });
+                        }).catch(() => cleanupSession());
+                    }
+                    return;
+                }
+
+                // CASE 2: JSON (Twilio)
                 const data = JSON.parse(message);
 
                 if (data.event === 'start') {
                     streamSid = data.start.streamSid;
                     callSid = data.start.callSid;
-                    
-                    let instruction = "You are a helpful office receptionist for Namaste Tech.";
+                    ensureSession();
 
-                    sessionPromise = ai.live.connect({
-                        model: 'gemini-2.5-flash-native-audio-preview-09-2025',
-                        config: {
-                            responseModalities: [Modality.AUDIO],
-                            systemInstruction: instruction,
-                            tools: [{ functionDeclarations: [{
-                                name: "transferCall",
-                                parameters: {
-                                    type: "OBJECT",
-                                    properties: {
-                                        destination: { type: "STRING" },
-                                        extension: { type: "STRING" }
-                                    },
-                                    required: ["destination", "extension"]
-                                }
-                            }] }],
-                            speechConfig: {
-                                voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } },
-                            },
-                        },
-                        callbacks: {
-                            onopen: () => console.log("✨ System: Gemini AI Connected"),
-                            onmessage: async (msg) => {
-                                // If socket is already closed, stop processing
-                                if (connection.socket.readyState !== 1) return;
-
-                                if (msg.serverContent?.interrupted) {
-                                    connection.socket.send(JSON.stringify({ 
-                                        event: 'clear', 
-                                        streamSid: streamSid 
-                                    }));
-                                    return;
-                                }
-
-                                if (msg.serverContent?.modelTurn?.parts?.[0]?.inlineData) {
-                                    const rawAudio = msg.serverContent.modelTurn.parts[0].inlineData.data;
-                                    const telephonyAudio = processGeminiAudio(rawAudio);
-                                    
-                                    try {
-                                        connection.socket.send(JSON.stringify({
-                                            event: 'media',
-                                            streamSid: streamSid,
-                                            media: { payload: telephonyAudio }
-                                        }));
-                                    } catch (err) {
-                                        // Socket likely closed mid-send
-                                        cleanupSession();
-                                    }
-                                }
-
-                                if (msg.toolCall) {
-                                    const call = msg.toolCall.functionCalls.find(fc => fc.name === 'transferCall');
-                                    if (call) {
-                                        console.log(`🔀 System: Transferring call to ${call.args.extension}`);
-                                    }
-                                }
-                            },
-                            onerror: (err) => console.error("Gemini Error:", err.message)
-                        }
-                    });
-
-                } else if (data.event === 'media' && sessionPromise) {
-                    // --- NOISE GATE IMPLEMENTATION ---
-                    // 1. Process Audio
+                } else if (data.event === 'media') {
+                    ensureSession();
                     const pcm16k = processTwilioAudio(data.media.payload);
-                    
-                    // 2. Check Volume (RMS)
                     const rms = calculateRMS(pcm16k);
                     
-                    // 3. Only send if volume is above threshold
                     if (rms > NOISE_THRESHOLD) {
                         const b64pcm = pcm16k.toString('base64');
-                        sessionPromise.then(session => {
+                        ensureSession().then(session => {
                             session.sendRealtimeInput({ 
                                 media: { mimeType: "audio/pcm;rate=16000", data: b64pcm } 
                             });
-                        }).catch(() => {
-                             // If sending to Gemini fails, the session might be dead
-                             cleanupSession();
-                        });
+                        }).catch(() => cleanupSession());
                     }
 
                 } else if (data.event === 'stop') {
@@ -291,9 +321,8 @@ fastify.register(async (fastify) => {
             }
         });
 
-        // --- HANDLE ABRUPT DISCONNECTIONS ---
         connection.socket.on('close', () => {
-            console.log("⚠️ System: WebSocket Client Disconnected Abruptly");
+            console.log("⚠️ System: WebSocket Client Disconnected");
             cleanupSession();
         });
 
