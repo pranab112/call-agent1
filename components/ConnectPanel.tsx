@@ -1,162 +1,163 @@
 
-import React, { useState } from 'react';
-import { SipConfig } from '../types';
+import React, { useState, useEffect } from 'react';
 
-interface ConnectPanelProps {
-    sipConfig: SipConfig;
-    setSipConfig: React.Dispatch<React.SetStateAction<SipConfig>>;
-    status: 'DISCONNECTED' | 'CONNECTING' | 'REGISTERED' | 'ERROR';
-    error?: string | null;
-}
+const ConnectPanel: React.FC = () => {
+  const [publicUrl, setPublicUrl] = useState('');
+  const [isCopied, setIsCopied] = useState(false);
+  const [serverStatus, setServerStatus] = useState<'checking' | 'online' | 'offline'>('checking');
 
-type Preset = 'linphone' | 'iptel' | 'sip2sip' | 'local' | 'custom';
-
-const ConnectPanel: React.FC<ConnectPanelProps> = ({ sipConfig, setSipConfig, status, error }) => {
-  const [activePreset, setActivePreset] = useState<Preset>('custom');
-
-  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-      const { name, value } = e.target;
-      setSipConfig(prev => ({ ...prev, [name]: value }));
-      if (activePreset !== 'custom') setActivePreset('custom');
-  };
-
-  const toggleConnection = () => {
-      setSipConfig(prev => ({ ...prev, isConnected: !prev.isConnected }));
-  };
-
-  const applyPreset = (preset: Preset) => {
-      setActivePreset(preset);
-      if (preset === 'linphone') {
-          setSipConfig(prev => ({
-              ...prev,
-              domain: 'sip.linphone.org',
-              websocketUrl: 'wss://sip.linphone.org',
-              isConnected: false
-          }));
-      } else if (preset === 'iptel') {
-          setSipConfig(prev => ({
-              ...prev,
-              domain: 'iptel.org',
-              websocketUrl: 'wss://ws.iptel.org',
-              isConnected: false
-          }));
-      } else if (preset === 'local') {
-          setSipConfig(prev => ({
-              ...prev,
-              domain: 'localhost',
-              websocketUrl: 'ws://localhost:8088/ws',
-              isConnected: false
-          }));
+  // Check Local Server Status
+  useEffect(() => {
+    const checkServer = async () => {
+      setServerStatus('checking');
+      try {
+        const res = await fetch('http://localhost:5050/');
+        if(res.ok) setServerStatus('online');
+        else setServerStatus('offline');
+      } catch (e) {
+        setServerStatus('offline');
       }
+    };
+    
+    checkServer();
+    const interval = setInterval(checkServer, 5000); // Poll every 5s
+    return () => clearInterval(interval);
+  }, []);
+
+  // Generate the Webhook URL
+  const webhookUrl = publicUrl 
+    ? `${publicUrl.replace(/\/$/, '')}/incoming-call` 
+    : 'https://your-ngrok-url.app/incoming-call';
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(webhookUrl);
+    setIsCopied(true);
+    setTimeout(() => setIsCopied(false), 2000);
   };
 
   return (
     <div className="flex flex-col h-full bg-slate-900 w-full overflow-y-auto custom-scrollbar">
-      <div className="p-6 border-b border-slate-800 bg-slate-950/50 backdrop-blur">
-        <h2 className="text-xl font-bold text-white flex items-center gap-3">
-           <div className="w-8 h-8 rounded-lg bg-orange-600 flex items-center justify-center text-sm shadow-lg shadow-orange-900/20">⚡</div>
-           SIP Registration
+      
+      {/* Header */}
+      <div className="p-6 border-b border-slate-800 bg-slate-950/30">
+        <h2 className="text-xl font-bold text-white flex items-center gap-2">
+           <span className="text-2xl">⚡</span>
+           Twilio Setup Wizard
         </h2>
-        <p className="text-[10px] text-slate-500 mt-1 uppercase tracking-widest font-bold">Connect Browser as Phone</p>
+        <p className="text-[11px] text-slate-400 font-medium mt-1">Follow these steps to connect your phone number.</p>
       </div>
 
-      <div className="p-6 space-y-6">
-         {/* Status Card */}
-         <div className={`p-4 border rounded-2xl flex items-center justify-between ${status === 'REGISTERED' ? 'bg-green-900/10 border-green-500/20' : 'bg-slate-800/50 border-slate-700'}`}>
-            <div>
-                <div className={`text-xs font-bold uppercase tracking-wider ${status === 'REGISTERED' ? 'text-green-400' : 'text-slate-400'}`}>
-                    {status === 'REGISTERED' ? 'Browser Online' : status === 'CONNECTING' ? 'Registering...' : 'Offline'}
+      <div className="p-6 space-y-8">
+
+        {/* STEP 0: SERVER HEALTH CHECK */}
+        <section className="bg-slate-800/40 rounded-xl p-4 border border-slate-700">
+             <div className="flex justify-between items-center mb-4">
+                 <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                    1. Backend Server Status
+                 </h3>
+                 <div className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase flex items-center gap-2 ${serverStatus === 'online' ? 'bg-green-500/10 text-green-400 border border-green-500/20' : 'bg-red-500/10 text-red-400 border border-red-500/20'}`}>
+                    <div className={`w-2 h-2 rounded-full ${serverStatus === 'online' ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`}></div>
+                    {serverStatus === 'online' ? 'System Online' : serverStatus === 'checking' ? 'Checking...' : 'Offline'}
+                 </div>
+             </div>
+
+             {serverStatus === 'offline' && (
+                 <div className="bg-black/30 rounded-lg p-3 space-y-3">
+                     <p className="text-[10px] text-red-300 font-bold">⚠️ Server not detected on port 5050.</p>
+                     <div>
+                        <p className="text-[10px] text-slate-500 mb-1">Run this command in a new terminal:</p>
+                        <div className="bg-slate-950 border border-slate-800 rounded p-2 text-[10px] font-mono text-slate-300 select-all">
+                            node server.js
+                        </div>
+                     </div>
+                     <div>
+                        <p className="text-[10px] text-slate-500 mb-1">Missing packages? Install first:</p>
+                        <div className="bg-slate-950 border border-slate-800 rounded p-2 text-[10px] font-mono text-slate-300 select-all">
+                            npm install fastify @fastify/websocket @fastify/formbody @google/genai dotenv twilio
+                        </div>
+                     </div>
+                 </div>
+             )}
+        </section>
+
+        {/* STEP 1: NGROK CONFIG */}
+        <section className="animate-in fade-in slide-in-from-bottom-2 duration-500">
+            <h3 className="text-sm font-bold text-slate-200 mb-3 flex items-center gap-2">
+                2. Public URL (Ngrok)
+            </h3>
+            
+            <div className="bg-slate-800/50 p-4 rounded-xl border border-slate-700">
+                <div className="mb-4">
+                    <p className="text-[10px] text-slate-400 mb-2">
+                        Twilio needs a public URL to reach your local computer. Run this in a <strong>separate terminal</strong>:
+                    </p>
+                    <div className="bg-black border border-slate-800 rounded p-2 flex justify-between items-center group">
+                        <code className="text-[10px] font-mono text-green-400">ngrok http 5050</code>
+                        <span className="text-[9px] text-slate-600 uppercase font-bold">Terminal Command</span>
+                    </div>
                 </div>
-                <div className="text-[10px] text-slate-500 mt-1">
-                    {status === 'REGISTERED' ? 'Ready to receive calls' : 'Enter SIP credentials below'}
-                </div>
-            </div>
-            <div className={`w-3 h-3 rounded-full ${status === 'REGISTERED' ? 'bg-green-500 shadow-[0_0_10px_rgba(34,197,94,0.5)]' : status === 'CONNECTING' ? 'bg-yellow-500 animate-pulse' : 'bg-slate-600'}`}></div>
-         </div>
 
-         {/* Error Alert */}
-         {error && (
-            <div className="bg-red-950/50 border border-red-500/50 rounded-xl p-3 text-red-400 text-[10px] font-mono">
-                Error: {error}
-            </div>
-         )}
-
-         {/* Presets */}
-         <div>
-            <label className="text-[10px] uppercase font-bold text-slate-500 block mb-1">Service Preset</label>
-            <div className="flex flex-wrap gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800">
-               <button onClick={() => applyPreset('linphone')} className={`flex-1 min-w-[80px] py-2 rounded-lg text-[10px] font-bold ${activePreset === 'linphone' ? 'bg-slate-800 text-white' : 'text-slate-500'}`}>Linphone</button>
-               <button onClick={() => applyPreset('iptel')} className={`flex-1 min-w-[80px] py-2 rounded-lg text-[10px] font-bold ${activePreset === 'iptel' ? 'bg-slate-800 text-white' : 'text-slate-500'}`}>IPTel.org</button>
-               <button onClick={() => applyPreset('local')} className={`flex-1 min-w-[80px] py-2 rounded-lg text-[10px] font-bold ${activePreset === 'local' ? 'bg-slate-800 text-white' : 'text-slate-500'}`}>Local</button>
-            </div>
-         </div>
-
-         {/* Form */}
-         <div className="space-y-4 pt-2">
-             <div>
-                <label className="text-[10px] uppercase font-bold text-slate-500 block mb-1">SIP Username</label>
+                <label className="text-[10px] uppercase font-bold text-slate-500 block mb-2">
+                    Paste the "Forwarding" URL from ngrok here:
+                </label>
                 <input 
                     type="text" 
-                    name="username"
-                    value={sipConfig.username}
-                    onChange={handleInputChange}
-                    placeholder="e.g. pranabpokharel"
-                    disabled={sipConfig.isConnected}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-sm text-white focus:border-orange-500 outline-none transition-all disabled:opacity-50"
+                    value={publicUrl}
+                    onChange={(e) => setPublicUrl(e.target.value)}
+                    placeholder="https://xxxx-xx-xx-xx.ngrok-free.app"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-3 text-sm text-white focus:border-blue-500 outline-none font-mono placeholder:text-slate-600"
                 />
-             </div>
-             
-             <div>
-                <label className="text-[10px] uppercase font-bold text-slate-500 block mb-1">SIP Password</label>
-                <input 
-                    type="password" 
-                    name="password"
-                    value={sipConfig.password || ''}
-                    onChange={handleInputChange}
-                    placeholder="••••••••"
-                    disabled={sipConfig.isConnected}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-sm text-white focus:border-orange-500 outline-none transition-all disabled:opacity-50"
-                />
-             </div>
+            </div>
+        </section>
 
-             <div className="grid grid-cols-2 gap-3">
-                 <div>
-                    <label className="text-[10px] uppercase font-bold text-slate-500 block mb-1">Domain</label>
-                    <input 
-                        type="text" 
-                        name="domain"
-                        value={sipConfig.domain}
-                        onChange={handleInputChange}
-                        placeholder="sip.linphone.org"
-                        disabled={sipConfig.isConnected}
-                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:border-orange-500 outline-none transition-all disabled:opacity-50"
-                    />
-                 </div>
-                 <div>
-                    <label className="text-[10px] uppercase font-bold text-slate-500 block mb-1">WSS Server</label>
-                    <input 
-                        type="text" 
-                        name="websocketUrl"
-                        value={sipConfig.websocketUrl}
-                        onChange={handleInputChange}
-                        placeholder="wss://sip.linphone.org"
-                        disabled={sipConfig.isConnected}
-                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-400 focus:border-orange-500 outline-none transition-all disabled:opacity-50"
-                    />
-                 </div>
-             </div>
+        {/* STEP 2: GENERATE WEBHOOK */}
+        <section className="animate-in fade-in slide-in-from-bottom-2 duration-700 delay-100">
+            <h3 className="text-sm font-bold text-slate-200 mb-3 flex items-center gap-2">
+                3. Configure Twilio
+            </h3>
 
-             <button 
-                onClick={toggleConnection}
-                className={`w-full py-4 rounded-xl font-bold text-sm shadow-lg transition-all active:scale-95 ${sipConfig.isConnected ? 'bg-red-600 hover:bg-red-500 text-white shadow-red-900/20' : 'bg-orange-600 hover:bg-orange-500 text-white shadow-orange-900/20'}`}
-             >
-                {sipConfig.isConnected ? 'Disconnect' : 'Connect Browser'}
-             </button>
-         </div>
+            <div className="bg-slate-800/50 p-4 rounded-xl border border-slate-700">
+                <div className="flex justify-between items-end mb-2">
+                    <label className="text-[10px] uppercase font-bold text-slate-500 block">
+                        Generated Webhook URL
+                    </label>
+                </div>
+                
+                <div className="flex gap-2 mb-4">
+                    <div className="flex-1 bg-black/50 border border-slate-800 rounded-lg px-3 py-3 text-xs text-green-400 font-mono truncate select-all relative overflow-hidden">
+                        {webhookUrl}
+                        {!publicUrl && <div className="absolute inset-0 bg-slate-900/90 flex items-center justify-center text-slate-500 italic text-[10px]">Enter Ngrok URL above</div>}
+                    </div>
+                    <button 
+                        onClick={handleCopy}
+                        disabled={!publicUrl}
+                        className={`px-4 rounded-lg text-xs font-bold text-white transition-all ${isCopied ? 'bg-green-600' : 'bg-slate-700 hover:bg-slate-600'} disabled:opacity-50 disabled:cursor-not-allowed`}
+                    >
+                        {isCopied ? 'Copied' : 'Copy'}
+                    </button>
+                </div>
 
-         <div className="text-[10px] text-slate-500 text-center px-4 leading-relaxed">
-            Note: Your SIP provider must support WebRTC/WebSocket transport. Public providers like Linphone.org work best.
-         </div>
+                <div className="bg-slate-950 border border-slate-800 rounded-lg p-4 space-y-3">
+                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Instructions</p>
+                    <ol className="list-decimal list-inside text-[11px] text-slate-400 space-y-2">
+                        <li>Go to <strong>Twilio Console</strong> &gt; <strong>Phone Numbers</strong>.</li>
+                        <li>Click your Active Number.</li>
+                        <li>Scroll to <strong>Voice & Fax</strong>.</li>
+                        <li>Under <strong>"A Call Comes In"</strong>, select <strong>Webhook</strong>.</li>
+                        <li>Paste the URL above.</li>
+                        <li>Set method to <strong>HTTP POST</strong> and click Save.</li>
+                    </ol>
+                </div>
+            </div>
+        </section>
+
+        <div className="p-4 bg-blue-900/10 border border-blue-500/20 rounded-xl text-center">
+             <p className="text-[10px] text-blue-300">
+                Once setup is complete, call your Twilio number. <br/>
+                The backend server will handle the call using Gemini Live.
+             </p>
+        </div>
+
       </div>
     </div>
   );
