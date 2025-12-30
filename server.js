@@ -26,7 +26,12 @@ fastify.register(fastifyFormBody);
 
 // CONFIGURATION
 const PORT = process.env.PORT || 5050;
-const SERVER_URL = process.env.SERVER_URL || process.env.NGROK_URL || `http://localhost:${PORT}`;
+
+// Auto-detect Railway URL or fall back to manual/localhost
+const SERVER_URL = process.env.SERVER_URL || 
+                   (process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : null) || 
+                   process.env.NGROK_URL || 
+                   `http://localhost:${PORT}`;
 
 const TWILIO_PHONE_NUMBER = process.env.TWILIO_PHONE_NUMBER;
 const API_KEY = process.env.API_KEY; 
