@@ -2,25 +2,78 @@
 import Fastify from 'fastify';
 import fastifyWs from '@fastify/websocket';
 import fastifyFormBody from '@fastify/formbody';
+import fastifyStatic from '@fastify/static';
 import { GoogleGenAI, Modality } from '@google/genai';
 import dotenv from 'dotenv';
 import Twilio from 'twilio';
+import Database from 'better-sqlite3';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import fs from 'fs';
 
 dotenv.config();
 
 // ============================================================================
-// TWILIO AI VOICE SERVER
-// Connects Twilio Media Streams (G.711 Mu-Law) to Gemini Live (PCM 16/24kHz)
+// AI VOICE SERVER (Production Ready)
 // ============================================================================
 
-const fastify = Fastify({ logger: { level: 'error' } });
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const fastify = Fastify({ logger: true });
 fastify.register(fastifyWs);
 fastify.register(fastifyFormBody);
 
+// CONFIGURATION
 const PORT = process.env.PORT || 5050;
+const SERVER_URL = process.env.SERVER_URL || process.env.NGROK_URL || `http://localhost:${PORT}`;
+
+const TWILIO_PHONE_NUMBER = process.env.TWILIO_PHONE_NUMBER;
 const API_KEY = process.env.API_KEY; 
 
-// ENABLE CORS (So the Frontend ConnectPanel can ping this server)
+// TWILIO CLIENT
+const TWILIO_SID = process.env.TWILIO_ACCOUNT_SID;
+const TWILIO_TOKEN = process.env.TWILIO_AUTH_TOKEN;
+const twilioClient = (TWILIO_SID && TWILIO_TOKEN) ? Twilio(TWILIO_SID, TWILIO_TOKEN) : null;
+
+// --- SQLITE DATABASE ---
+const db = new Database('office_agent.db');
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT
+  );
+`);
+
+const loadSettings = () => {
+    try {
+        const row = db.prepare('SELECT value FROM settings WHERE key = ?').get('knowledge_base');
+        if (row) return JSON.parse(row.value);
+    } catch (e) {
+        console.error("DB Load Error:", e);
+    }
+    return {
+        companyName: "Default Office",
+        knowledge: `You are a helpful receptionist. No specific data provided yet.`
+    };
+};
+
+let systemContext = loadSettings();
+
+// --- SERVE STATIC FRONTEND (Production) ---
+const distPath = path.join(__dirname, 'dist');
+if (fs.existsSync(distPath)) {
+    fastify.register(fastifyStatic, {
+        root: distPath,
+        prefix: '/',
+    });
+    console.log("📂 Serving static frontend from ./dist");
+} else {
+    console.log("⚠️ ./dist folder not found. Run 'npm run build' for production frontend.");
+}
+
+// --- CORS (For Dev) ---
 fastify.addHook('onRequest', (request, reply, done) => {
     reply.header("Access-Control-Allow-Origin", "*");
     reply.header("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
@@ -32,9 +85,7 @@ fastify.addHook('onRequest', (request, reply, done) => {
     done();
 });
 
-// --- AUDIO CONVERSION HELPERS ---
-
-// Convert Mu-Law (Twilio) to Linear PCM 16-bit
+// --- AUDIO PROCESSING ---
 const muLawToLinear = (ulawByte) => {
     ulawByte = ~ulawByte;
     const sign = (ulawByte & 0x80);
@@ -60,14 +111,12 @@ const linearToMuLaw = (pcmSample) => {
     return ~(mask ^ ((exponent << 4) | mantissa));
 };
 
-// Process Twilio Audio: 8kHz Mu-Law -> 16kHz PCM
 const processTwilioAudio = (base64Data) => {
     const mulawBuffer = Buffer.from(base64Data, 'base64');
     const pcmBuffer = new Int16Array(mulawBuffer.length);
     for (let i = 0; i < mulawBuffer.length; i++) {
         pcmBuffer[i] = muLawToLinear(mulawBuffer[i]);
     }
-    // Simple Upsample 8k -> 16k (Doubling samples)
     const upsampled = new Int16Array(pcmBuffer.length * 2);
     for (let i = 0; i < pcmBuffer.length; i++) {
         upsampled[i * 2] = pcmBuffer[i];
@@ -76,16 +125,12 @@ const processTwilioAudio = (base64Data) => {
     return Buffer.from(upsampled.buffer);
 };
 
-// Process Gemini Audio: 24kHz/16kHz PCM -> 8kHz Mu-Law
 const processGeminiAudio = (rawPcmData) => {
     const pcmBuffer = Buffer.from(rawPcmData, 'base64');
     const int16Data = new Int16Array(pcmBuffer.buffer, pcmBuffer.byteOffset, pcmBuffer.byteLength / 2);
-    
-    // Downsample (Ratio 3 for 24kHz -> 8kHz)
     const downsampleRatio = 3; 
     const outputSize = Math.floor(int16Data.length / downsampleRatio);
     const mulawOutput = new Uint8Array(outputSize);
-    
     for (let i = 0; i < outputSize; i++) {
         const sample = int16Data[i * downsampleRatio];
         mulawOutput[i] = linearToMuLaw(sample);
@@ -95,16 +140,104 @@ const processGeminiAudio = (rawPcmData) => {
 
 // --- ROUTES ---
 
-// Health Check for Frontend
-fastify.get('/', async () => ({ status: 'online', service: 'Twilio AI Voice Server' }));
+fastify.get('/health', async () => ({ status: 'online', service: 'Voice AI' }));
 
-// TWILIO WEBHOOK HANDLER
-fastify.all('/incoming-call', async (req, reply) => {
-    console.log("☎️  Incoming Call Detected!");
-    const host = req.headers.host;
-    const protocol = host.includes('localhost') ? 'ws' : 'wss';
+fastify.post('/settings', async (req, reply) => {
+    const { companyName, knowledge } = req.body;
+    systemContext.companyName = companyName || systemContext.companyName;
+    systemContext.knowledge = knowledge || systemContext.knowledge;
+    const stmt = db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)');
+    stmt.run('knowledge_base', JSON.stringify(systemContext));
+    return { success: true };
+});
+
+fastify.post('/make-call', async (req, reply) => {
+    const { to } = req.body;
+    if (!twilioClient) return reply.code(500).send({ error: "Twilio credentials missing on server" });
     
-    // TwiML to start Media Stream
+    try {
+        const call = await twilioClient.calls.create({
+            to: to,
+            from: TWILIO_PHONE_NUMBER, 
+            url: `${SERVER_URL.replace(/\/$/, '')}/incoming-call`, 
+        });
+        return { success: true, callSid: call.sid };
+    } catch (error) {
+        return reply.code(500).send({ success: false, error: error.message });
+    }
+});
+
+// AUTO-SETUP ENDPOINT (For Railway/Cloud)
+fastify.post('/setup-twilio', async (req, reply) => {
+    if (!twilioClient) return reply.code(500).send({ error: "Twilio credentials missing on server" });
+    
+    const webhookUrl = `${SERVER_URL.replace(/\/$/, '')}/incoming-call`;
+    const sipDomainName = "aivoicereceptionist"; // You can make this dynamic if needed
+    const sipUser = process.env.SIP_USER || "aiagent";
+    const sipPass = process.env.SIP_PASS; // MUST BE IN ENV
+    
+    if (!sipPass) {
+        return reply.code(400).send({ success: false, error: "SIP_PASS environment variable is missing" });
+    }
+    
+    try {
+        console.log(`Configuring Twilio with Webhook: ${webhookUrl}`);
+
+        // 1. Update Phone Numbers
+        const numbers = await twilioClient.incomingPhoneNumbers.list({ limit: 5 });
+        for (const number of numbers) {
+            await twilioClient.incomingPhoneNumbers(number.sid).update({
+                voiceUrl: webhookUrl,
+                voiceMethod: 'POST'
+            });
+        }
+
+        // 2. SIP Domain
+        const domains = await twilioClient.sip.domains.list();
+        let sipDomain = domains.find(d => d.domainName === sipDomainName);
+        if (sipDomain) {
+            sipDomain = await twilioClient.sip.domains(sipDomain.sid).update({
+                voiceUrl: webhookUrl,
+                voiceMethod: 'POST',
+                sipRegistration: true
+            });
+        } else {
+            sipDomain = await twilioClient.sip.domains.create({
+                domainName: sipDomainName,
+                voiceUrl: webhookUrl,
+                voiceMethod: 'POST',
+                sipRegistration: true
+            });
+        }
+
+        // 3. SIP Credentials
+        const lists = await twilioClient.sip.credentialLists.list();
+        let credList = lists.find(l => l.friendlyName === 'AI_Office_Users');
+        if (!credList) credList = await twilioClient.sip.credentialLists.create({ friendlyName: 'AI_Office_Users' });
+
+        try {
+            await twilioClient.sip.credentialLists(credList.sid).credentials.create({ username: sipUser, password: sipPass });
+        } catch (e) { /* Ignore if exists */ }
+
+        // 4. Map Credentials to Domain
+        const mappings = await twilioClient.sip.domains(sipDomain.sid).auth.registrations.credentialListMappings.list();
+        if (!mappings.find(m => m.friendlyName === 'AI_Office_Users')) {
+            await twilioClient.sip.domains(sipDomain.sid).auth.registrations.credentialListMappings.create({ credentialListSid: credList.sid });
+        }
+
+        return { success: true, message: "Twilio Configured Successfully", sipDomain: `${sipDomainName}.sip.twilio.com` };
+
+    } catch (error) {
+        console.error("Setup Error:", error);
+        return reply.code(500).send({ success: false, error: error.message });
+    }
+});
+
+fastify.all('/incoming-call', async (req, reply) => {
+    const host = req.headers.host; 
+    const isLocal = host.includes('localhost') || host.includes('127.0.0.1');
+    const protocol = isLocal ? 'ws' : 'wss';
+    
     const twiml = `
     <Response>
         <Connect>
@@ -115,28 +248,25 @@ fastify.all('/incoming-call', async (req, reply) => {
     reply.type('text/xml').send(twiml);
 });
 
-// WEBSOCKET HANDLER
 fastify.register(async (fastify) => {
     fastify.get('/media-stream', { websocket: true }, (connection, req) => {
-        console.log("⚡ Twilio Media Stream Connected");
+        console.log("⚡ Stream Connected");
         
-        const ai = new GoogleGenAI({ apiKey: API_KEY });
         let sessionPromise = null;
         let streamSid = null;
 
-        // Initialize Gemini Session
-        const ensureSession = () => {
+        const startGeminiSession = () => {
             if (sessionPromise) return sessionPromise;
-            
-            if (!API_KEY) {
-                console.error("❌ API_KEY is missing in .env file!");
-                return;
-            }
+            if (!API_KEY) { console.error("❌ API Key Missing"); return; }
 
-            const instruction = `You are a polite office receptionist for Namaste Tech. 
-            Speak in Nepali. Keep answers brief and professional. 
-            Your goal is to help the caller with office information.`;
+            const instruction = `
+            Role: Receptionist for ${systemContext.companyName}.
+            Data: ${systemContext.knowledge}
+            Tone: Polite, Professional.
+            Language: Nepali (Primary) or English.
+            `;
 
+            const ai = new GoogleGenAI({ apiKey: API_KEY });
             sessionPromise = ai.live.connect({
                 model: 'gemini-2.5-flash-native-audio-preview-09-2025',
                 config: {
@@ -145,35 +275,27 @@ fastify.register(async (fastify) => {
                     speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } },
                 },
                 callbacks: {
-                    onopen: () => console.log("✨ Gemini Session Started"),
+                    onopen: () => console.log("✨ AI Connected"),
                     onmessage: async (msg) => {
                         if (connection.socket.readyState !== 1) return;
-
-                        // Handle Interruption (User spoke while AI was speaking)
+                        
                         if (msg.serverContent?.interrupted && streamSid) {
-                            connection.socket.send(JSON.stringify({ 
-                                event: 'clear', 
-                                streamSid: streamSid 
-                            }));
+                            connection.socket.send(JSON.stringify({ event: 'clear', streamSid: streamSid }));
                             return;
                         }
 
-                        // Handle Audio from Gemini
                         if (msg.serverContent?.modelTurn?.parts?.[0]?.inlineData) {
                             const rawAudio = msg.serverContent.modelTurn.parts[0].inlineData.data;
                             const twilioAudio = processGeminiAudio(rawAudio);
-                            
                             if (streamSid) {
                                 connection.socket.send(JSON.stringify({
-                                    event: 'media',
-                                    streamSid: streamSid,
-                                    media: { payload: twilioAudio }
+                                    event: 'media', streamSid: streamSid, media: { payload: twilioAudio }
                                 }));
                             }
                         }
                     },
-                    onerror: (err) => console.error("❌ Gemini Error:", err.message),
-                    onclose: () => console.log("🔒 Gemini Session Closed")
+                    onerror: (err) => console.error("AI Error:", err.message),
+                    onclose: () => console.log("AI Closed")
                 }
             });
             return sessionPromise;
@@ -182,39 +304,26 @@ fastify.register(async (fastify) => {
         connection.socket.on('message', async (message) => {
             try {
                 const data = JSON.parse(message);
-
                 if (data.event === 'start') {
                     streamSid = data.start.streamSid;
-                    console.log(`▶️  Stream Started: ${streamSid}`);
-                    ensureSession(); // Start AI immediately
+                    startGeminiSession();
                 } 
-                else if (data.event === 'media') {
-                    if (sessionPromise) {
-                        const session = await sessionPromise;
-                        // Convert 8k MuLaw -> 16k PCM
-                        const pcmData = processTwilioAudio(data.media.payload);
-                        session.sendRealtimeInput({ 
-                            media: { mimeType: "audio/pcm;rate=16000", data: pcmData.toString('base64') } 
-                        });
-                    }
+                else if (data.event === 'media' && sessionPromise) {
+                    const session = await sessionPromise;
+                    const pcmData = processTwilioAudio(data.media.payload);
+                    session.sendRealtimeInput({ 
+                        media: { mimeType: "audio/pcm;rate=16000", data: pcmData.toString('base64') } 
+                    });
                 } 
                 else if (data.event === 'stop') {
-                    console.log("⏹️  Stream Stopped");
-                    if (sessionPromise) (await sessionPromise).close();
+                    if(sessionPromise) (await sessionPromise).close();
                 }
-            } catch (e) {
-                console.error("Socket Error:", e);
-            }
-        });
-
-        connection.socket.on('close', async () => {
-            if (sessionPromise) try { (await sessionPromise).close(); } catch(e){}
+            } catch (e) { }
         });
     });
 });
 
 fastify.listen({ port: PORT, host: '0.0.0.0' }, (err) => {
     if (err) { console.error(err); process.exit(1); }
-    console.log(`✅ Twilio Server Listening on port ${PORT}`);
-    console.log(`   (Allowing CORS requests for Dashboard checks)`);
+    console.log(`✅ Server running on port ${PORT}`);
 });
